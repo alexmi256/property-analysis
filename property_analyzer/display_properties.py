@@ -507,6 +507,9 @@ aoi = [
     (45.547682377783296, -73.63163948524743),
     (45.54972603156036, -73.65429878700525),
 ]
+
+if not Path("mls_complete_minimal.db").exists():
+    raise Exception ("Can't run code if the DB does not exist")
 viewer = MapViewer("mls_complete_minimal.db", area_of_interest=aoi)
 # viewer.debug_column()
 relevant_listings = viewer.get_listings_from_db(
