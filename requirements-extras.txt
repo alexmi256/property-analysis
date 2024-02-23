@@ -1,0 +1,15 @@
+requests
+shapely
+folium
+geopy
+pyGAM
+pandas
+arrow
+numpy
+ipyleaflet
+scikit-learn
+matplotlib
+scipy
+generativepy
+folium
+plotly
