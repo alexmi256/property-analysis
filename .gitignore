@@ -162,3 +162,9 @@ cython_debug/
 
 listings_to_audit.csv
 mls_notes.txt
+index.html
+montreal.tar.xz
+vancouver.tar.xz
+toronto.tar.xz
+*.sqlite
+mls_complete_minimal.db

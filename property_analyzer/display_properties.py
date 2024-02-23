@@ -5,13 +5,13 @@ import os
 import re
 import sqlite3
 import statistics
+import tarfile
 from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.request import urlretrieve
 
 import folium
-from ipywidgets import HTML
-from ipyleaflet import Map, Marker, basemaps, LayersControl, basemap_to_tiles, AwesomeIcon, Popup, Polyline
 from geopy import distance
 from shapely import Point, Polygon
 
@@ -108,21 +108,21 @@ class MapViewer:
                 pass
 
     def get_listings_from_db(
-            self,
-            min_price: int = 100000,
-            max_price: int = 10000000,
-            must_have_int_sqft: bool = False,
-            must_have_price_change: bool = False,
-            no_new_listings: bool = True,
-            no_vacant_land: bool = True,
-            no_high_rise: bool = True,
-            within_area_of_interest: bool = True,
-            min_metro_distance_meters: int | None = None,
-            min_bedroom: int | None = None,
-            min_sqft: int = None,
-            max_price_per_sqft: int | None = None,
-            last_updated_days_ago: int | None = 14,
-            limit: int = -1,
+        self,
+        min_price: int = 100000,
+        max_price: int = 10000000,
+        must_have_int_sqft: bool = False,
+        must_have_price_change: bool = False,
+        no_new_listings: bool = True,
+        no_vacant_land: bool = True,
+        no_high_rise: bool = True,
+        within_area_of_interest: bool = True,
+        min_metro_distance_meters: int | None = None,
+        min_bedroom: int | None = None,
+        min_sqft: int = None,
+        max_price_per_sqft: int | None = None,
+        last_updated_days_ago: int | None = 14,
+        limit: int = -1,
     ) -> list[dict]:
         with closing(sqlite3.connect(self.db_file)) as connection:
             # This helps maintain the row as a dict
@@ -144,13 +144,13 @@ class MapViewer:
                 if last_updated_days_ago:
                     conditions.append(f"DATE(ComputedLastUpdated) >= DATE('now', '-{last_updated_days_ago} day')")
                 if min_sqft:
-                    conditions.append(f'ComputedSQFT IS NULL OR ComputedSQFT >= {min_sqft}')
+                    conditions.append(f"ComputedSQFT IS NULL OR ComputedSQFT >= {min_sqft}")
                 if max_price_per_sqft:
-                    conditions.append(f'ComputedPricePerSQFT IS NULL OR ComputedPricePerSQFT <= {max_price_per_sqft}')
+                    conditions.append(f"ComputedPricePerSQFT IS NULL OR ComputedPricePerSQFT <= {max_price_per_sqft}")
                 if limit != -1:
                     conditions.append(f"LIMIT {limit}")
 
-                conditions = [f'({x})' for x in conditions]
+                conditions = [f"({x})" for x in conditions]
                 query = f"""
                     SELECT Id,
                            MlsNumber,
@@ -236,7 +236,7 @@ class MapViewer:
                 return listings
 
     def get_heatmap_data(
-            self, min_price=100000, max_price=5000000, within_area_of_interest: bool = True, show_per_sqft=False
+        self, min_price=100000, max_price=5000000, within_area_of_interest: bool = True, show_per_sqft=False
     ):
         """
         There are multiple paramaters when we want to generate a heatmap:
@@ -304,7 +304,7 @@ class MapViewer:
             "RelativeDetailsURL",
             "AlternateURL_VideoLink",
             "PublicRemarks",
-            "ComputedLastUpdated"
+            "ComputedLastUpdated",
         ]
         for listing in listings:
             has_custom_notes = listing["MlsNumber"] in self.mls_notes
@@ -315,7 +315,7 @@ class MapViewer:
                     continue
             listings_to_save.append(listing)
         with open("listings_to_audit.csv", "w") as csv_file:
-            dict_writer = csv.DictWriter(csv_file, cols_for_csv, extrasaction='ignore')
+            dict_writer = csv.DictWriter(csv_file, cols_for_csv, extrasaction="ignore")
             dict_writer.writeheader()
             dict_writer.writerows(listings_to_save)
 
@@ -345,8 +345,11 @@ class MapViewer:
             has_custom_notes = listing["MlsNumber"] in self.mls_notes
             custom_notes = self.mls_notes[listing["MlsNumber"]].get("notes") if has_custom_notes else ""
             internet_status = "📠" if custom_notes and "bad_internet" in custom_notes.lower() else ""
-            last_updated = '👴' if datetime.strptime(listing["ComputedLastUpdated"],
-                                                    '%Y-%m-%d') > datetime.now() + timedelta(days=-7) else '👶'
+            last_updated = (
+                "👴"
+                if datetime.strptime(listing["ComputedLastUpdated"], "%Y-%m-%d") > datetime.now() + timedelta(days=-7)
+                else "👶"
+            )
 
             if not listing["Property_Parking"]:
                 garage_status = "❓🅿️"
@@ -361,8 +364,8 @@ class MapViewer:
             else:
                 price_history = ""
 
-            if listing['ComputedPricePerSQFT']:
-                icon_color = MapViewer.get_color_for_number_between(listing['ComputedPricePerSQFT'])
+            if listing["ComputedPricePerSQFT"]:
+                icon_color = MapViewer.get_color_for_number_between(listing["ComputedPricePerSQFT"])
 
             tooltip = f"${listing['Property_PriceUnformattedValue']}, {listing['Building_Bedrooms']}BDR ${listing['ComputedPricePerSQFT']}/sqft, {garage_status}{internet_status}{last_updated} {price_history} {custom_notes}"
 
@@ -405,90 +408,6 @@ class MapViewer:
 
         my_map.save("index.html")
 
-    def display_listings_on_map_ipyleaflet(self, listings):
-        mapnik = basemap_to_tiles(basemaps.OpenStreetMap.Mapnik)
-        mapnik.base = True
-
-        my_map = Map(layers=[mapnik], center=(45.5037, -73.6254), zoom=14)
-        # TODO: Add transit map if API key is available
-        # my_map.add(LayersControl())
-
-        if self.area_of_interest:
-            polygon = Polyline(locations=self.area_of_interest, color='blue', fill=False)
-            my_map.add(polygon)
-
-        for listing in listings:
-            icon_color = "blue"
-            marker_color = "white"
-            has_custom_notes = listing["MlsNumber"] in self.mls_notes
-            custom_notes = self.mls_notes[listing["MlsNumber"]].get("notes") if has_custom_notes else ""
-            internet_status = "📠" if custom_notes and "bad_internet" in custom_notes.lower() else ""
-            last_updated = '👴' if datetime.strptime(listing["ComputedLastUpdated"],
-                                                    '%Y-%m-%d') > datetime.now() + timedelta(days=-7) else '👶'
-
-            if not listing["Property_Parking"]:
-                garage_status = "❓🅿️"
-            elif "Garage" in listing["Property_Parking"]:
-                garage_status = "🅿️"
-            else:
-                garage_status = "🤔🅿️"
-
-            if listing["PriceChangeDateUTC"]:
-                price_history = "🗠" + listing["PriceChangeDateUTC"][:10]
-                # TODO: Once we have a history db, try to look it up
-            else:
-                price_history = ""
-
-            if listing['ComputedPricePerSQFT']:
-                icon_color = MapViewer.get_color_for_number_between(listing['ComputedPricePerSQFT'])
-
-            tooltip = f"${listing['Property_PriceUnformattedValue']}, {listing['Building_Bedrooms']}BDR ${listing['ComputedPricePerSQFT']}/sqft, {garage_status}{internet_status}{last_updated} {price_history} {custom_notes}"
-
-            popup_html = f"""
-                        <img src="{listing['Property_Photo_HighResPath']}" width="320">
-                        <b>${listing['Property_PriceUnformattedValue']}</b> ${listing['ComputedPricePerSQFT']}/sqft {listing['MlsNumber']} {price_history}<br>
-                        {listing['Property_Address_AddressText']} <br>
-                        {listing['Building_Bedrooms']}BDR, {listing['Building_BathroomTotal']}BA, {listing['ComputedSQFT']}sqft, {listing['Building_Type']} <br>
-                        <a href="{listing['AlternateURL_DetailsLink']}" target="_blank">Details</a> <a href="https://www.realtor.ca{listing['RelativeDetailsURL']}" target="_blank">MLS</a> <br>
-                        Last Seen: {listing['ComputedLastUpdated']} <br>
-                        Parking: {listing['Property_Parking']}, {listing['Property_AmmenitiesNearBy']} <br>
-                        {custom_notes}
-                        """
-
-            if has_custom_notes:
-                if self.mls_notes[listing["MlsNumber"]].get("keep") is False:
-                    house_icon = "circle-xmark"
-                    marker_color = "lightgray"
-                else:
-                    house_icon = "circle-check"
-                    marker_color = "lightblue"
-
-            elif listing["Building_Type"] == "House":
-                house_icon = "house"
-            elif listing["Building_Type"] in ["Apartment"]:
-                house_icon = "building"
-            else:
-                house_icon = "city"
-
-            # Note: This type of icon is broken in HTML output but works in jupyter
-            icon = AwesomeIcon(
-                name=house_icon,
-                icon_color=icon_color,
-                marker_color=marker_color
-            )
-
-            marker = Marker(
-                location=[listing["Property_Address_Latitude"], listing["Property_Address_Longitude"]],
-                icon=icon,
-                title=tooltip,
-                draggable=False
-            )
-            marker.popup = HTML(popup_html)
-            my_map.add(marker)
-            my_map.save('my_map_ipy.html', title='Properties for Sale (ipyleaflet)')
-
-
-
 
 aoi = [
     (45.546780742201165, -73.65807533729821),
@@ -508,10 +427,27 @@ aoi = [
     (45.54972603156036, -73.65429878700525),
 ]
 
-if not Path("mls_complete_minimal.db").exists():
-    raise Exception ("Can't run code if the DB does not exist")
-viewer = MapViewer("mls_complete_minimal.db", area_of_interest=aoi)
-# viewer.debug_column()
+
+def download_and_extract_db(
+    url="https://github.com/alexmi256/property-analysis/releases/download/v0.0.1/montreal.tar.xz",
+):
+    file_name = "montreal.tar.xz"
+    path, headers = urlretrieve(url, file_name)
+    # print(f'Downloaded file {path}:\n{headers}')
+    with tarfile.open(file_name) as f:
+        f.extractall(filter="data")
+
+
+# Enable this if you want to download the data from GitHub
+# download_and_extract_db()
+
+db_file = "montreal.sqlite"
+if not Path(db_file).exists():
+    raise Exception("Can't run code if the DB does not exist")
+
+
+viewer = MapViewer(db_file, area_of_interest=aoi)
+
 relevant_listings = viewer.get_listings_from_db(
     min_price=400000,
     max_price=700000,
@@ -522,5 +458,4 @@ relevant_listings = viewer.get_listings_from_db(
     max_price_per_sqft=700,
 )
 # viewer.export_data_to_csv(relevant_listings)
-# viewer.display_listings_on_map(relevant_listings)
-viewer.display_listings_on_map_ipyleaflet(relevant_listings)
+viewer.display_listings_on_map(relevant_listings)
