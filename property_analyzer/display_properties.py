@@ -5,11 +5,11 @@ import os
 import re
 import sqlite3
 import statistics
-import tarfile
+
 from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
-from urllib.request import urlretrieve
+
 
 import folium
 from geopy import distance
@@ -58,19 +58,6 @@ class MapViewer:
                 self.points_of_interest.extend([list(reversed(x["geometry"]["coordinates"])) for x in poi["features"]])
 
     @staticmethod
-    def convert_interior_size_to_sqft(building_size_interior: str) -> float:
-        size_details = building_size_interior.split(" ")
-        size_number = float(size_details[0])
-        size_measurement = size_details[1]
-
-        if size_measurement == "sqft":
-            return size_number
-        elif size_measurement == "m2":
-            return size_number * 10.764
-        else:
-            return 0
-
-    @staticmethod
     def get_color_for_number_between(number: int | float, minimum: float = 309, maximum: float = 1085) -> str:
         if number < minimum:
             number = minimum
@@ -79,33 +66,6 @@ class MapViewer:
         # https://stackoverflow.com/questions/69622670/getting-a-color-range-from-percentage
         ipv = 255 / maximum
         return "#{0:02x}{1:02x}{2:02x}".format(int(ipv * number), 255 - int(ipv * number), 0)
-
-    def debug_column(self) -> None:
-        """
-        A function just to debug column values that cannot be done in SQL
-        :return:
-        """
-        with closing(sqlite3.connect(self.db_file)) as connection:
-            connection.row_factory = sqlite3.Row
-            with closing(connection.cursor()) as cursor:
-                query = """
-                SELECT Building_SizeInterior, Property_PriceUnformattedValue, Property_Address_Longitude, Property_Address_Latitude 
-                FROM Listings 
-                WHERE Building_SizeInterior IS NOT NULL AND
-                Property_PriceUnformattedValue > 400000 AND 
-                Property_PriceUnformattedValue < 700000;
-                """
-                listings = [dict(x) for x in cursor.execute(query).fetchall()]
-                prices = [
-                    float(x["Property_PriceUnformattedValue"])
-                    / MapViewer.convert_interior_size_to_sqft(x["Building_SizeInterior"])
-                    for x in listings
-                    if Polygon(self.area_of_interest).contains(
-                        Point(x["Property_Address_Latitude"], x["Property_Address_Longitude"])
-                    )
-                ]
-                print(f"Mean: {statistics.geometric_mean(prices)} stdev: {statistics.stdev(prices)}")
-                pass
 
     def get_listings_from_db(
         self,
@@ -428,16 +388,6 @@ aoi = [
 ]
 
 
-def download_and_extract_db(
-    url="https://github.com/alexmi256/property-analysis/releases/download/v0.0.1/montreal.tar.xz",
-):
-    file_name = "montreal.tar.xz"
-    path, headers = urlretrieve(url, file_name)
-    # print(f'Downloaded file {path}:\n{headers}')
-    with tarfile.open(file_name) as f:
-        f.extractall(filter="data")
-
-
 # Enable this if you want to download the data from GitHub
 # download_and_extract_db()
 
@@ -452,7 +402,7 @@ relevant_listings = viewer.get_listings_from_db(
     min_price=400000,
     max_price=700000,
     within_area_of_interest=True,
-    min_metro_distance_meters=1300,
+    min_metro_distance_meters=1200,
     min_bedroom=2,
     min_sqft=900,
     max_price_per_sqft=700,
