@@ -15,18 +15,21 @@ import folium
 from geopy import distance
 from shapely import Point, Polygon
 
+from utils import get_metro_lines
+
 logging.basicConfig(level=logging.DEBUG)
 
 logger = logging.getLogger(__name__)
 
 
 class MapViewer:
-    def __init__(self, db_file: str, area_of_interest: list[tuple] | None = None):
+    def __init__(self, db_file: str, city: str = "Montreal", area_of_interest: list[tuple] | None = None):
         """
 
         :param db_file:
         """
         self.db_file = db_file
+        self.city = city
         self.area_of_interest = area_of_interest
         # These should be MLS numbers that I've looked at and never want to see again
         self.blocklist = []
@@ -82,6 +85,7 @@ class MapViewer:
         min_sqft: int = None,
         max_price_per_sqft: int | None = None,
         last_updated_days_ago: int | None = 14,
+        has_garage: bool = False,
         limit: int = -1,
     ) -> list[dict]:
         with closing(sqlite3.connect(self.db_file)) as connection:
@@ -90,7 +94,7 @@ class MapViewer:
             with closing(connection.cursor()) as cursor:
                 conditions = []
                 if no_vacant_land:
-                    conditions.append("Property_ZoningType NOT IN ('Agricultural')")
+                    conditions.append("Property_ZoningType NOT IN ('Agricultural') AND Property_Type != 'Vacant Land'")
                 if no_high_rise:
                     conditions.append("Building_StoriesTotal IS NULL OR CAST (Building_StoriesTotal AS INTEGER) < 5")
                 if no_new_listings:
@@ -98,7 +102,10 @@ class MapViewer:
                 if must_have_int_sqft:
                     conditions.append("Building_SizeInterior IS NOT NULL")
                 if must_have_price_change:
-                    conditions.append("PriceChangeDateUTC IS NOT NULL")
+                    # FIXME: Query the DB and find earliest date we have prices for
+                    conditions.append(
+                        "PriceChangeDateUTC IS NOT NULL AND DATE(substr(PriceChangeDateUTC, 1, 11) ) > DATE('2023-11-19')"
+                    )
                 if min_bedroom:
                     conditions.append(f"Building_Bedrooms IS NULL OR Building_Bedrooms >= {min_bedroom}")
                 if last_updated_days_ago:
@@ -107,6 +114,9 @@ class MapViewer:
                     conditions.append(f"ComputedSQFT IS NULL OR ComputedSQFT >= {min_sqft}")
                 if max_price_per_sqft:
                     conditions.append(f"ComputedPricePerSQFT IS NULL OR ComputedPricePerSQFT <= {max_price_per_sqft}")
+                if has_garage:
+                    conditions.append(f"Property_Parking LIKE '%Garage%'")
+                    # conditions.append(f"Property_Parking IS NULL")
                 if limit != -1:
                     conditions.append(f"LIMIT {limit}")
 
@@ -279,21 +289,94 @@ class MapViewer:
             dict_writer.writeheader()
             dict_writer.writerows(listings_to_save)
 
+    def display_price_changes(self):
+        my_map = folium.Map(location=(45.5037, -73.6254), tiles=None, zoom_start=14)
+
+        # Layers
+        folium.TileLayer("OpenStreetMap").add_to(my_map)
+
+        if self.area_of_interest:
+            folium.Polygon(self.area_of_interest, tooltip="Area of Interest").add_to(my_map)
+
+        for metro_line in get_metro_lines():
+            folium.PolyLine(
+                metro_line["locations"], color=metro_line["color"], tooltip=metro_line["name"], weight=8
+            ).add_to(my_map)
+
+        listings_with_price_changes = self.get_listings_from_db(
+            min_price=200000,
+            max_price=5000000,
+            no_high_rise=False,
+            no_new_listings=False,
+            within_area_of_interest=False,
+            must_have_price_change=True,
+            last_updated_days_ago=90,
+        )
+
+        for listing_with_price_changes in listings_with_price_changes:
+            with closing(sqlite3.connect(self.db_file)) as connection:
+                with closing(connection.cursor()) as cursor:
+                    # FIXME: This is slow and terrible, this should be done in one query
+                    sql = f"""
+                    SELECT Price, Date
+                      FROM PriceHistory
+                     WHERE MlsNumber = {listing_with_price_changes['MlsNumber']}
+                     ORDER BY DATE(Date) ASC
+                     LIMIT 1;
+                    """
+                    oldest_price = cursor.execute(sql).fetchone()[0]
+            current_price = listing_with_price_changes["Property_PriceUnformattedValue"]
+            # IDK WTF
+            if oldest_price == current_price:
+                continue
+            change_amount = (float(current_price) / oldest_price - 1) * 100
+            if change_amount == 0 or change_amount > 200:
+                # Just a rounding error I don't care about or price mistakes
+                continue
+            elif change_amount > 0:
+                color = "green"
+            else:
+                color = "red"
+
+            change_amount = abs(int(change_amount))
+            popup = f"Current {current_price}, Previous {oldest_price} ({change_amount})"
+
+            folium.Circle(
+                [
+                    listing_with_price_changes["Property_Address_Latitude"],
+                    listing_with_price_changes["Property_Address_Longitude"],
+                ],
+                radius=20 * change_amount,
+                color=color,
+                fill=True,
+                fill_opacity=0.1,
+                fill_color=color,
+                weight=1,
+                popup=popup,
+            ).add_to(my_map)
+
+        folium.LayerControl().add_to(my_map)
+
+        my_map.save(f"{self.city}_price_changes.html")
+
     def display_listings_on_map(self, listings):
         my_map = folium.Map(location=(45.5037, -73.6254), tiles=None, zoom_start=14)
 
         # Layers
         folium.TileLayer("OpenStreetMap").add_to(my_map)
-        if os.environ["THUNDERFOREST_API_KEY"]:
-            folium.TileLayer(
-                "https://tile.thunderforest.com/transport/{z}/{x}/{y}.png?apikey="
-                + os.environ["THUNDERFOREST_API_KEY"],
-                name="Thunderforest Transportation",
-                attr='&copy; <a href="http://www.thunderforest.com/">Thunderforest</a>, &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-            ).add_to(my_map)
 
         if self.area_of_interest:
             folium.Polygon(self.area_of_interest, tooltip="Area of Interest").add_to(my_map)
+
+        for metro_line in get_metro_lines():
+            folium.PolyLine(
+                metro_line["locations"], color=metro_line["color"], tooltip=metro_line["name"], weight=8
+            ).add_to(my_map)
+
+        for poi in self.points_of_interest:
+            folium.Circle(
+                poi, radius=20, color="black", fill=True, fill_opacity=1.0, fill_color="white", weight=1
+            ).add_to(my_map)
 
         # This is TRASH
         # heat_data = self.get_heatmap_data(show_per_sqft=True)
@@ -366,7 +449,7 @@ class MapViewer:
 
         folium.LayerControl().add_to(my_map)
 
-        my_map.save("index.html")
+        my_map.save(f"{self.city}.html")
 
 
 aoi = [
@@ -396,7 +479,7 @@ if not Path(db_file).exists():
     raise Exception("Can't run code if the DB does not exist")
 
 
-viewer = MapViewer(db_file, area_of_interest=aoi)
+viewer = MapViewer(db_file, city="Montreal", area_of_interest=aoi)
 
 relevant_listings = viewer.get_listings_from_db(
     min_price=400000,
@@ -406,6 +489,10 @@ relevant_listings = viewer.get_listings_from_db(
     min_bedroom=2,
     min_sqft=900,
     max_price_per_sqft=700,
+    # has_garage=True,
 )
 # viewer.export_data_to_csv(relevant_listings)
 viewer.display_listings_on_map(relevant_listings)
+
+
+# viewer.display_price_changes()
