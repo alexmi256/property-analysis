@@ -167,3 +167,4 @@ montreal.tar.xz
 vancouver.tar.xz
 toronto.tar.xz
 *.sqlite
+*.html

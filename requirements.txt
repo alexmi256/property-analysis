@@ -8,3 +8,6 @@ numpy
 ipyleaflet
 scikit-learn
 matplotlib
+hsluv
+colour
+colorcet

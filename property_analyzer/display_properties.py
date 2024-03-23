@@ -5,6 +5,8 @@ import os
 import re
 import sqlite3
 import statistics
+import colorcet as cc
+
 
 from contextlib import closing
 from datetime import datetime, timedelta
@@ -68,7 +70,10 @@ class MapViewer:
             number = maximum
         # https://stackoverflow.com/questions/69622670/getting-a-color-range-from-percentage
         ipv = 255 / maximum
-        return "#{0:02x}{1:02x}{2:02x}".format(int(ipv * number), 255 - int(ipv * number), 0)
+        color_number = int(ipv * number)
+        # https://colorcet.holoviz.org/user_guide/
+        return cc.b_linear_bmy_10_95_c71[color_number]
+        # return "#{0:02x}{1:02x}{2:02x}".format(int(ipv * number), 255 - int(ipv * number), 0)
 
     def get_listings_from_db(
         self,
@@ -86,6 +91,8 @@ class MapViewer:
         max_price_per_sqft: int | None = None,
         last_updated_days_ago: int | None = 14,
         has_garage: bool = False,
+        has_parking_details: bool = False,
+        has_upcoming_openhouse: bool = False,
         limit: int = -1,
     ) -> list[dict]:
         with closing(sqlite3.connect(self.db_file)) as connection:
@@ -94,7 +101,9 @@ class MapViewer:
             with closing(connection.cursor()) as cursor:
                 conditions = []
                 if no_vacant_land:
-                    conditions.append("Property_ZoningType NOT IN ('Agricultural') AND Property_Type != 'Vacant Land'")
+                    conditions.append(
+                        "(Property_ZoningType IS NULL OR Property_ZoningType NOT IN ('Agricultural')) AND Property_Type != 'Vacant Land'"
+                    )
                 if no_high_rise:
                     conditions.append("Building_StoriesTotal IS NULL OR CAST (Building_StoriesTotal AS INTEGER) < 5")
                 if no_new_listings:
@@ -104,7 +113,7 @@ class MapViewer:
                 if must_have_price_change:
                     # FIXME: Query the DB and find earliest date we have prices for
                     conditions.append(
-                        "PriceChangeDateUTC IS NOT NULL AND DATE(substr(PriceChangeDateUTC, 1, 11) ) > DATE('2023-11-19')"
+                        "PriceChangeDateUTC IS NOT NULL AND DATE(PriceChangeDateUTC) > DATE('2023-11-19')"
                     )
                 if min_bedroom:
                     conditions.append(f"Building_Bedrooms IS NULL OR Building_Bedrooms >= {min_bedroom}")
@@ -116,49 +125,90 @@ class MapViewer:
                     conditions.append(f"ComputedPricePerSQFT IS NULL OR ComputedPricePerSQFT <= {max_price_per_sqft}")
                 if has_garage:
                     conditions.append(f"Property_Parking LIKE '%Garage%'")
-                    # conditions.append(f"Property_Parking IS NULL")
+                elif has_parking_details:
+                    conditions.append(f"Property_Parking IS NOT NULL")
                 if limit != -1:
                     conditions.append(f"LIMIT {limit}")
 
                 conditions = [f"({x})" for x in conditions]
-                query = f"""
-                    SELECT Id,
-                           MlsNumber,
-                           Property_Address_AddressText,
-                           Property_Address_Longitude,
-                           Property_Address_Latitude,
-                           Property_PriceUnformattedValue,
-                           Property_ParkingSpaceTotal,
-                           Property_Parking,
-                           Property_OwnershipType,
-                           Property_Type,
-                           Property_Photo_HighResPath,
-                           Property_AmmenitiesNearBy,
-                           InsertedDateUTC,
-                           PriceChangeDateUTC,
-                           Building_StoriesTotal,
-                           Building_BathroomTotal,
-                           Building_Bedrooms,
-                           Building_Type,
-                           Building_UnitTotal,
-                           Building_SizeInterior,
-                           Building_SizeExterior,
-                           Land_SizeTotal,
-                           Land_SizeFrontage,
-                           AlternateURL_DetailsLink,
-                           RelativeDetailsURL,
-                           AlternateURL_VideoLink,
-                           PostalCode,
-                           PublicRemarks,
-                           ComputedSQFT,
-                           ComputedPricePerSQFT,
-                           ComputedLastUpdated
-                      FROM Listings
-                     WHERE 
-                           Property_PriceUnformattedValue > {min_price} AND 
-                           Property_PriceUnformattedValue < {max_price} AND 
-                           {' AND '.join(conditions)};
-                """
+
+                columns_to_select = [
+                    "Id",
+                    "MlsNumber",
+                    "Property_Address_AddressText",
+                    "Property_Address_Longitude",
+                    "Property_Address_Latitude",
+                    "Property_PriceUnformattedValue",
+                    "Property_ParkingSpaceTotal",
+                    "Property_Parking",
+                    "Property_OwnershipType",
+                    "Property_Type",
+                    "Property_Photo_HighResPath",
+                    "Property_AmmenitiesNearBy",
+                    "InsertedDateUTC",
+                    "PriceChangeDateUTC",
+                    "Building_StoriesTotal",
+                    "Building_BathroomTotal",
+                    "Building_Bedrooms",
+                    "Building_Type",
+                    "Building_UnitTotal",
+                    "Building_SizeInterior",
+                    "Building_SizeExterior",
+                    "Land_SizeTotal",
+                    "Land_SizeFrontage",
+                    "AlternateURL_DetailsLink",
+                    "RelativeDetailsURL",
+                    "AlternateURL_VideoLink",
+                    "PostalCode",
+                    "PublicRemarks",
+                    "ComputedSQFT",
+                    "ComputedPricePerSQFT",
+                    "ComputedLastUpdated",
+                ]
+
+                if has_upcoming_openhouse:
+                    columns_to_select.append('FormattedDateTime')
+                    columns_to_select_str = ",\n".join(columns_to_select)
+                    query = f"""
+                    WITH open_house_unnested AS (
+                        SELECT MlsNumber,
+                               value AS OpenHouseGeneratedId
+                          FROM Listings,
+                               json_each(OpenHouse) 
+                         WHERE OpenHouse IS NOT NULL
+                    ),
+                    open_house_in_future AS (
+                        SELECT MlsNumber,
+                               FormattedDateTime
+                          FROM open_house_unnested
+                               JOIN
+                               OpenHouse USING (
+                                   OpenHouseGeneratedId
+                               )
+                         WHERE DATE(StartDateTime) >= DATE('now') 
+                         GROUP BY MlsNumber
+                    )
+                    SELECT {columns_to_select_str}
+                      FROM open_house_in_future
+                           JOIN
+                           Listings USING (
+                               MlsNumber
+                           )
+                    WHERE 
+                       Property_PriceUnformattedValue > {min_price} AND 
+                       Property_PriceUnformattedValue < {max_price} AND 
+                       {' AND '.join(conditions)};
+                    """
+                else:
+                    columns_to_select_str = ",\n".join(columns_to_select)
+                    query = f"""
+                        SELECT {columns_to_select_str}
+                          FROM Listings
+                         WHERE 
+                               Property_PriceUnformattedValue > {min_price} AND 
+                               Property_PriceUnformattedValue < {max_price} AND 
+                               {' AND '.join(conditions)};
+                    """
                 rows = cursor.execute(query).fetchall()
                 listings = [dict(x) for x in rows]
                 logging.info(f"Received {len(listings)} listings from the DB")
@@ -205,15 +255,20 @@ class MapViewer:
 
                 return listings
 
+    # FIXME: This function is useless, remove it and just do a regular damn query
     def get_heatmap_data(
-        self, min_price=100000, max_price=5000000, within_area_of_interest: bool = True, show_per_sqft=False
-    ):
+        self,
+        min_price: int = 100000,
+        max_price: int = 5000000,
+        within_area_of_interest: bool = True,
+        show_per_sqft: bool = False,
+    ) -> list[list]:
         """
         There are multiple paramaters when we want to generate a heatmap:
         - do we want it to be for the sample we're intrested in (i.e. price, features) or for a more general population
         - do we want it to be based on listing price or price/sqft
         FIXME: heatmap show lat, long, but I need to convert this in values
-        :return:
+        :return: a list containing [lat, long, price]
         """
         heat_data = []
         if show_per_sqft:
@@ -224,9 +279,15 @@ class MapViewer:
                 within_area_of_interest=within_area_of_interest,
             )
             for listing in listings:
-                weight = listing["Propery_CostPerSQFT"]
+                weight = listing["ComputedPricePerSQFT"]
                 heat_data.append(
-                    [float(listing["Property_Address_Latitude"]), float(listing["Property_Address_Longitude"]), weight]
+                    [
+                        float(listing["Property_Address_Latitude"]),
+                        float(listing["Property_Address_Longitude"]),
+                        weight,
+                        listing["AlternateURL_DetailsLink"],
+                        listing["RelativeDetailsURL"],
+                    ]
                 )
         else:
             listings = self.get_listings_from_db(
@@ -238,7 +299,13 @@ class MapViewer:
             for listing in listings:
                 weight = listing["Property_PriceUnformattedValue"]
                 heat_data.append(
-                    [float(listing["Property_Address_Latitude"]), float(listing["Property_Address_Longitude"]), weight]
+                    [
+                        float(listing["Property_Address_Latitude"]),
+                        float(listing["Property_Address_Longitude"]),
+                        weight,
+                        listing["AlternateURL_DetailsLink"],
+                        listing["RelativeDetailsURL"],
+                    ]
                 )
 
         return heat_data
@@ -359,7 +426,58 @@ class MapViewer:
 
         my_map.save(f"{self.city}_price_changes.html")
 
-    def display_listings_on_map(self, listings):
+    def add_heat_data_to_map(self, folium_map: folium.Map, is_per_sqft=False):
+        listings = self.get_listings_from_db(
+            min_price=200000,
+            max_price=2000000,
+            must_have_int_sqft=is_per_sqft,
+            within_area_of_interest=False,
+            no_high_rise=True,
+            min_bedroom=2,
+            last_updated_days_ago=90,
+        )
+
+        keyname_for_price = "Property_PriceUnformattedValue" if is_per_sqft is False else "ComputedSQFT"
+
+        price_range = [x[keyname_for_price] for x in listings]
+        if is_per_sqft:
+            min_range = 100
+            max_range = 1000
+        else:
+            min_range = 400000
+            max_range = 1000000
+
+        print(f"Heat map range is between {min_range} and {max_range}")
+
+        for listing in listings:
+            popup_html = f"""
+                        <img src="{listing['Property_Photo_HighResPath']}" width="320">
+                        <b>${listing['Property_PriceUnformattedValue']}</b> ${listing['ComputedPricePerSQFT']}/sqft {listing['MlsNumber']} <br>
+                        {listing['Property_Address_AddressText']} <br>
+                        {listing['Building_Bedrooms']}BDR, {listing['Building_BathroomTotal']}BA, {listing['ComputedSQFT']}sqft, {listing['Building_Type']} <br>
+                        <a href="{listing['AlternateURL_DetailsLink']}" target="_blank">Details</a> <a href="https://www.realtor.ca{listing['RelativeDetailsURL']}" target="_blank">MLS</a> <br>
+                        Last Seen: {listing['ComputedLastUpdated']} <br>
+                        Parking: {listing['Property_Parking']}, {listing['Property_AmmenitiesNearBy']} <br>
+                        {listing.get('FormattedDateTime', '')}
+                        """
+
+            circle_color = MapViewer.get_color_for_number_between(
+                listing[keyname_for_price], minimum=min_range, maximum=max_range
+            )
+
+            folium.Circle(
+                location=[listing["Property_Address_Latitude"], listing["Property_Address_Longitude"]],
+                radius=70,
+                color=circle_color,
+                fill=True,
+                fill_opacity=0.5,
+                fill_color=circle_color,
+                weight=1,
+                popup=popup_html,
+                tooltip=listing[keyname_for_price],
+            ).add_to(folium_map)
+
+    def display_listings_on_map(self, listings, display_heatmap=True):
         my_map = folium.Map(location=(45.5037, -73.6254), tiles=None, zoom_start=14)
 
         # Layers
@@ -378,9 +496,9 @@ class MapViewer:
                 poi, radius=20, color="black", fill=True, fill_opacity=1.0, fill_color="white", weight=1
             ).add_to(my_map)
 
-        # This is TRASH
-        # heat_data = self.get_heatmap_data(show_per_sqft=True)
-        # HeatMap(heat_data, name="Houses for Sale", radius=15).add_to(my_map)
+        if display_heatmap:
+            # Plugin heatmap is trash and based on density not weights
+            self.add_heat_data_to_map(my_map, is_per_sqft=False)
 
         for listing in listings:
             icon_color = "blue"
@@ -395,7 +513,7 @@ class MapViewer:
             )
 
             if not listing["Property_Parking"]:
-                garage_status = "❓🅿️"
+                garage_status = "❌🅿️"
             elif "Garage" in listing["Property_Parking"]:
                 garage_status = "🅿️"
             else:
@@ -421,7 +539,7 @@ class MapViewer:
             Last Seen: {listing['ComputedLastUpdated']} <br>
             Parking: {listing['Property_Parking']}, {listing['Property_AmmenitiesNearBy']} <br>
             {custom_notes}
-
+            {listing.get('FormattedDateTime', '')}
             """
             # folium.Popup("Let's try quotes", parse_html=True, max_width=100)
 
@@ -429,6 +547,18 @@ class MapViewer:
                 if self.mls_notes[listing["MlsNumber"]].get("keep") is False:
                     house_icon = "circle-xmark"
                     marker_color = "lightgray"
+                elif any(x in custom_notes.lower() for x in ["sam"]):
+                    marker_color = "pink"
+                    icon_color = ("#ff0000",)
+                    house_icon = "question-circle"
+                elif any(x in custom_notes.lower() for x in ["sold"]) or datetime.strptime(
+                    listing["ComputedLastUpdated"], "%Y-%m-%d"
+                ) < datetime.now() + timedelta(days=-7):
+                    marker_color = "black"
+                    house_icon = "circle-xmark"
+                elif any(x in custom_notes.lower() for x in ["contacted", "saw"]):
+                    marker_color = "orange"
+                    house_icon = "circle-check"
                 else:
                     house_icon = "circle-check"
                     marker_color = "lightblue"
@@ -474,7 +604,7 @@ aoi = [
 # Enable this if you want to download the data from GitHub
 # download_and_extract_db()
 
-db_file = "montreal.sqlite"
+db_file = "montreal_full.sqlite"
 if not Path(db_file).exists():
     raise Exception("Can't run code if the DB does not exist")
 
@@ -482,17 +612,19 @@ if not Path(db_file).exists():
 viewer = MapViewer(db_file, city="Montreal", area_of_interest=aoi)
 
 relevant_listings = viewer.get_listings_from_db(
-    min_price=400000,
+    min_price=350000,
     max_price=700000,
-    within_area_of_interest=True,
-    min_metro_distance_meters=1200,
+    within_area_of_interest=False,
+    min_metro_distance_meters=2000,
     min_bedroom=2,
     min_sqft=900,
     max_price_per_sqft=700,
+    has_upcoming_openhouse=True
+    # has_parking_details=True
     # has_garage=True,
 )
 # viewer.export_data_to_csv(relevant_listings)
-viewer.display_listings_on_map(relevant_listings)
+viewer.display_listings_on_map(relevant_listings, display_heatmap=False)
 
 
 # viewer.display_price_changes()
