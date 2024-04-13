@@ -9,6 +9,7 @@ import colorcet as cc
 from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional
 
 
 import folium
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 class MapViewer:
-    def __init__(self, db_file: str, city: str = "Montreal", area_of_interest: list[tuple] | None = None):
+    def __init__(self, db_file: str, city: str = "Montreal", area_of_interest: Optional[list[tuple]] = None):
         """
 
         :param db_file:
@@ -127,7 +128,9 @@ class MapViewer:
                 elif has_parking_details:
                     conditions.append(f"Property_Parking IS NOT NULL")
                 if no_undividied:
-                    conditions.append(f"Property_OwnershipType IS NULL OR Property_OwnershipType != 'Undivided Co-ownership'")
+                    conditions.append(
+                        f"Property_OwnershipType IS NULL OR Property_OwnershipType != 'Undivided Co-ownership'"
+                    )
 
                 conditions = [f"({x})" for x in conditions]
 
@@ -212,7 +215,7 @@ class MapViewer:
                     """
 
                 if limit != -1:
-                    query += (f" LIMIT {limit}")
+                    query += f" LIMIT {limit}"
 
                 rows = cursor.execute(query).fetchall()
                 listings = [dict(x) for x in rows]
@@ -509,11 +512,12 @@ class MapViewer:
             icon_color = "blue"
             marker_color = "white"
             has_custom_notes = listing["MlsNumber"] in self.mls_notes
-            custom_notes = self.mls_notes[listing["MlsNumber"]].get("notes", '').lower() if has_custom_notes else ""
+            custom_notes = self.mls_notes[listing["MlsNumber"]].get("notes", "").lower() if has_custom_notes else ""
             internet_status = "📠" if custom_notes and "bad_internet" in custom_notes.lower() else ""
             last_updated = (
                 "👴"
-                if datetime.strptime(listing["ComputedLastUpdated"][:10], "%Y-%m-%d") > datetime.now() + timedelta(days=-7)
+                if datetime.strptime(listing["ComputedLastUpdated"][:10], "%Y-%m-%d")
+                > datetime.now() + timedelta(days=-7)
                 else "👶"
             )
 
@@ -550,12 +554,9 @@ class MapViewer:
             # folium.Popup("Let's try quotes", parse_html=True, max_width=100)
 
             if custom_notes:
-                if (
-                    any(x in custom_notes for x in ["condo fee", "bad internet", 'hard no', 'basement', 'sold'])
-                    or (
-                        datetime.strptime(listing["ComputedLastUpdated"][:10], "%Y-%m-%d")
-                        < datetime.now() + timedelta(days=-7)
-                    )
+                if any(x in custom_notes for x in ["condo fee", "bad internet", "hard no", "basement", "sold"]) or (
+                    datetime.strptime(listing["ComputedLastUpdated"][:10], "%Y-%m-%d")
+                    < datetime.now() + timedelta(days=-7)
                 ):
                     marker_color = "black"
                     house_icon = "circle-xmark"

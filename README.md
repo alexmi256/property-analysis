@@ -4,6 +4,7 @@ A python script to visualize properties for sale
 Also includes a notebook to visualize the same data
 
 ![](images/screenshot1.png)
+![](images/screenshot2.png)
 
 # How
 - Python
