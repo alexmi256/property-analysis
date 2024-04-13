@@ -1,7 +1,15 @@
 # What
-A notebook to visualize properties for sale
+A python script to visualize properties for sale
 
-Also includes a non notebook python script to generate the listings.
+Also includes a notebook to visualize the same data
+
+![](images/screenshot1.png)
+
+# How
+- Python
+  - Folium/Leaflet, Geopy
+- SQLite
+  - Custom data scraped using [property-scraper-tools](https://github.com/alexmi256/property-scraper-tools) 
 
 [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/alexmi256/property-analysis/HEAD?labpath=properties.ipynb)
 
