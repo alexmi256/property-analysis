@@ -20,3 +20,5 @@ Also includes a notebook to visualize the same data
 - https://m-clark.github.io/generalized-additive-models/appendix.html
 - http://www.ilmarin.info/re_mtl/#rent-4-12
 - https://martinmcbride.org/post/2021/voronoi-diagrams-with-scipy/
+- https://download.geofabrik.de/north-america/canada.html
+- https://mapping.share.library.harvard.edu/tutorials/openstreetmap/extractbyfeature/

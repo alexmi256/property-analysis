@@ -166,3 +166,4 @@ index.html
 *.tar.xz
 *.sqlite
 *.html
+*.qmd
