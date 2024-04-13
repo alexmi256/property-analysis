@@ -1,6 +1,8 @@
 # What
 A notebook to visualize properties for sale
 
+Also includes a non notebook python script to generate the listings.
+
 [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/alexmi256/property-analysis/HEAD?labpath=properties.ipynb)
 
 # References

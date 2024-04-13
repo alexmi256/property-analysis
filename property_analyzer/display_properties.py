@@ -1,10 +1,8 @@
 import csv
 import json
 import logging
-import os
 import re
 import sqlite3
-import statistics
 import colorcet as cc
 
 
@@ -89,10 +87,11 @@ class MapViewer:
         min_bedroom: int | None = None,
         min_sqft: int = None,
         max_price_per_sqft: int | None = None,
-        last_updated_days_ago: int | None = 14,
+        last_updated_days_ago: int | None = 7,
         has_garage: bool = False,
         has_parking_details: bool = False,
         has_upcoming_openhouse: bool = False,
+        no_undividied: bool = False,
         limit: int = -1,
     ) -> list[dict]:
         with closing(sqlite3.connect(self.db_file)) as connection:
@@ -127,8 +126,8 @@ class MapViewer:
                     conditions.append(f"Property_Parking LIKE '%Garage%'")
                 elif has_parking_details:
                     conditions.append(f"Property_Parking IS NOT NULL")
-                if limit != -1:
-                    conditions.append(f"LIMIT {limit}")
+                if no_undividied:
+                    conditions.append(f"Property_OwnershipType IS NULL OR Property_OwnershipType != 'Undivided Co-ownership'")
 
                 conditions = [f"({x})" for x in conditions]
 
@@ -166,8 +165,14 @@ class MapViewer:
                     "ComputedLastUpdated",
                 ]
 
+                where_clause = f"""
+                    Property_PriceUnformattedValue > {min_price} AND 
+                    Property_PriceUnformattedValue < {max_price} AND 
+                    {' AND '.join(conditions)}
+                """
+
                 if has_upcoming_openhouse:
-                    columns_to_select.append('FormattedDateTime')
+                    columns_to_select.append("FormattedDateTime")
                     columns_to_select_str = ",\n".join(columns_to_select)
                     query = f"""
                     WITH open_house_unnested AS (
@@ -195,9 +200,7 @@ class MapViewer:
                                MlsNumber
                            )
                     WHERE 
-                       Property_PriceUnformattedValue > {min_price} AND 
-                       Property_PriceUnformattedValue < {max_price} AND 
-                       {' AND '.join(conditions)};
+                       {where_clause}
                     """
                 else:
                     columns_to_select_str = ",\n".join(columns_to_select)
@@ -205,10 +208,12 @@ class MapViewer:
                         SELECT {columns_to_select_str}
                           FROM Listings
                          WHERE 
-                               Property_PriceUnformattedValue > {min_price} AND 
-                               Property_PriceUnformattedValue < {max_price} AND 
-                               {' AND '.join(conditions)};
+                               {where_clause}
                     """
+
+                if limit != -1:
+                    query += (f" LIMIT {limit}")
+
                 rows = cursor.execute(query).fetchall()
                 listings = [dict(x) for x in rows]
                 logging.info(f"Received {len(listings)} listings from the DB")
@@ -504,11 +509,11 @@ class MapViewer:
             icon_color = "blue"
             marker_color = "white"
             has_custom_notes = listing["MlsNumber"] in self.mls_notes
-            custom_notes = self.mls_notes[listing["MlsNumber"]].get("notes") if has_custom_notes else ""
+            custom_notes = self.mls_notes[listing["MlsNumber"]].get("notes", '').lower() if has_custom_notes else ""
             internet_status = "📠" if custom_notes and "bad_internet" in custom_notes.lower() else ""
             last_updated = (
                 "👴"
-                if datetime.strptime(listing["ComputedLastUpdated"], "%Y-%m-%d") > datetime.now() + timedelta(days=-7)
+                if datetime.strptime(listing["ComputedLastUpdated"][:10], "%Y-%m-%d") > datetime.now() + timedelta(days=-7)
                 else "👶"
             )
 
@@ -520,7 +525,7 @@ class MapViewer:
                 garage_status = "🤔🅿️"
 
             if listing["PriceChangeDateUTC"]:
-                price_history = "🗠" + listing["PriceChangeDateUTC"][:10]
+                price_history = " 🗠" + listing["PriceChangeDateUTC"][:10]
                 # TODO: Once we have a history db, try to look it up
             else:
                 price_history = ""
@@ -532,31 +537,36 @@ class MapViewer:
 
             popup_html = f"""
             <img src="{listing['Property_Photo_HighResPath']}" width="320">
-            <b>${listing['Property_PriceUnformattedValue']}</b> ${listing['ComputedPricePerSQFT']}/sqft {listing['MlsNumber']} {price_history}<br>
+            <b>${listing['Property_PriceUnformattedValue']}</b> ${listing['ComputedPricePerSQFT']}/sqft {listing['MlsNumber']}{price_history}<br>
             {listing['Property_Address_AddressText']} <br>
             {listing['Building_Bedrooms']}BDR, {listing['Building_BathroomTotal']}BA, {listing['ComputedSQFT']}sqft, {listing['Building_Type']} <br>
             <a href="{listing['AlternateURL_DetailsLink']}" target="_blank">Details</a> <a href="https://www.realtor.ca{listing['RelativeDetailsURL']}" target="_blank">MLS</a> <br>
             Last Seen: {listing['ComputedLastUpdated']} <br>
+            Ownership: {listing.get('Property_OwnershipType')} <br>
             Parking: {listing['Property_Parking']}, {listing['Property_AmmenitiesNearBy']} <br>
             {custom_notes}
             {listing.get('FormattedDateTime', '')}
             """
             # folium.Popup("Let's try quotes", parse_html=True, max_width=100)
 
-            if has_custom_notes:
-                if self.mls_notes[listing["MlsNumber"]].get("keep") is False:
+            if custom_notes:
+                if (
+                    any(x in custom_notes for x in ["condo fee", "bad internet", 'hard no', 'basement', 'sold'])
+                    or (
+                        datetime.strptime(listing["ComputedLastUpdated"][:10], "%Y-%m-%d")
+                        < datetime.now() + timedelta(days=-7)
+                    )
+                ):
+                    marker_color = "black"
+                    house_icon = "circle-xmark"
+                elif self.mls_notes[listing["MlsNumber"]].get("keep") is False:
                     house_icon = "circle-xmark"
                     marker_color = "lightgray"
-                elif any(x in custom_notes.lower() for x in ["sam"]):
+                elif any(x in custom_notes for x in ["sam"]):
                     marker_color = "pink"
                     icon_color = ("#ff0000",)
                     house_icon = "question-circle"
-                elif any(x in custom_notes.lower() for x in ["sold"]) or datetime.strptime(
-                    listing["ComputedLastUpdated"], "%Y-%m-%d"
-                ) < datetime.now() + timedelta(days=-7):
-                    marker_color = "black"
-                    house_icon = "circle-xmark"
-                elif any(x in custom_notes.lower() for x in ["contacted", "saw"]):
+                elif any(x in custom_notes for x in ["contacted", "saw"]):
                     marker_color = "orange"
                     house_icon = "circle-check"
                 else:
@@ -613,14 +623,15 @@ viewer = MapViewer(db_file, city="Montreal", area_of_interest=aoi)
 
 relevant_listings = viewer.get_listings_from_db(
     min_price=350000,
-    max_price=700000,
+    max_price=690000,
     within_area_of_interest=False,
     min_metro_distance_meters=2000,
     min_bedroom=2,
-    min_sqft=900,
-    max_price_per_sqft=700,
-    has_upcoming_openhouse=True
-    # has_parking_details=True
+    min_sqft=920,
+    max_price_per_sqft=660,
+    # has_upcoming_openhouse=True,
+    # no_undividied=True,
+    # has_parking_details=True,
     # has_garage=True,
 )
 # viewer.export_data_to_csv(relevant_listings)
